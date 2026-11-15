@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { DealPage } from '../src/components/DealPage';
-import { Home } from '../src/components/Home';
-import type { DealsApi } from '../src/lib/api';
-import type { DealView } from '../src/lib/deals';
+import { DealPage } from '../components/DealPage';
+import { Home } from '../components/Home';
+import type { DealsApi } from '../lib/api';
+import type { DealView } from '../lib/deals';
 
-const ID = '11111111-2222-4333-8444-555555555555';
-const db = { auth: {} } as unknown as SupabaseClient;
+const push = vi.fn();
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push, refresh: vi.fn() }) }));
+
+const ID = '65a1b2c3d4e5f60718293a4b';
 
 const deal = (o: Partial<DealView> = {}): DealView => ({
   id: ID, shop_name: 'عطور الورد', title: 'عطر عود', description: null, price_fils: 25500, status: 'awaiting_payment',
@@ -38,7 +39,7 @@ afterEach(() => {
 describe('DealPage', () => {
   it('a visitor sees the deal and is asked to sign in before paying', async () => {
     const api = fakeApi(deal());
-    render(<DealPage db={db} id={ID} paid={false} loggedIn={false} api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn={false} api={api} />);
     expect(await screen.findByText('عطر عود')).toBeTruthy();
     expect(screen.getByText('25.500 د.ك')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'سجّل دخول عشان تدفع' }));
@@ -50,7 +51,7 @@ describe('DealPage', () => {
     const api = fakeApi(deal());
     const assign = vi.fn();
     vi.stubGlobal('location', { ...window.location, assign, origin: 'http://localhost:5300' });
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     fireEvent.click(await screen.findByRole('button', { name: 'ادفع بأمان (المبلغ ينحجز)' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/cs_test_x'));
     vi.unstubAllGlobals();
@@ -58,7 +59,7 @@ describe('DealPage', () => {
 
   it('the seller marks shipped, then the buyer confirms and the money is released', async () => {
     const api = fakeApi(deal({ status: 'held', is_seller: true, paid_at: '2026-11-14T10:30:00Z' }));
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     expect((await screen.findByTestId('status')).textContent).toBe('المبلغ محجوز');
     fireEvent.click(screen.getByRole('button', { name: 'تم الشحن' }));
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('انشحن الطلب'));
@@ -67,7 +68,7 @@ describe('DealPage', () => {
 
     const buyerApi = fakeApi(deal({ status: 'shipped', is_buyer: true }));
     vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={buyerApi} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={buyerApi} />);
     expect(screen.queryByRole('button', { name: 'ألغِ الطلب وفك الحجز' })).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: 'استلمت الطلب ✓ (حوّل المبلغ للبائع)' }));
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('انتقل المبلغ للبائع'));
@@ -77,7 +78,7 @@ describe('DealPage', () => {
   it('the buyer can cancel before shipping, and nothing happens if they back out of the confirm', async () => {
     const api = fakeApi(deal({ status: 'held', is_buyer: true }));
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     const cancel = await screen.findByRole('button', { name: 'ألغِ الطلب وفك الحجز' });
     fireEvent.click(cancel);
     expect(api.act).not.toHaveBeenCalled();
@@ -90,7 +91,7 @@ describe('DealPage', () => {
   it('after returning from Stripe it waits for the webhook instead of trusting the URL', async () => {
     const api = fakeApi(deal({ is_buyer: true }));
     vi.stubGlobal('history', { ...window.history, replaceState: vi.fn() });
-    render(<DealPage db={db} id={ID} paid loggedIn api={api} />);
+    render(<DealPage id={ID} paid loggedIn api={api} />);
     expect(await screen.findByText('جاري التحقق من الدفع…')).toBeTruthy();
     // الـWebhook يحجز المبلغ
     (api.get as ReturnType<typeof vi.fn>).mockResolvedValue(deal({ is_buyer: true, status: 'held' }));
@@ -102,7 +103,7 @@ describe('DealPage', () => {
   it('keeps checking after a failed poll and shows no stale error', async () => {
     const api = fakeApi(deal({ is_buyer: true }));
     vi.stubGlobal('history', { ...window.history, replaceState: vi.fn() });
-    render(<DealPage db={db} id={ID} paid loggedIn api={api} />);
+    render(<DealPage id={ID} paid loggedIn api={api} />);
     await screen.findByText('جاري التحقق من الدفع…');
     const get = api.get as ReturnType<typeof vi.fn>;
     get.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue(deal({ is_buyer: true, status: 'held' }));
@@ -113,14 +114,14 @@ describe('DealPage', () => {
 
   it('the seller cannot cancel while a buyer is paying', async () => {
     const api = fakeApi(deal({ is_seller: true, reserved_by_other: true }));
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     expect(await screen.findByText(/في مشتري قاعد يدفع الحين/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'ألغِ الصفقة' })).toBeNull();
   });
 
   it('a second buyer cannot pay while the deal is reserved', async () => {
     const api = fakeApi(deal({ reserved_by_other: true }));
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     expect(await screen.findByText('في مشتري ثاني قاعد يدفع هالصفقة الحين.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /ادفع/ })).toBeNull();
   });
@@ -128,13 +129,13 @@ describe('DealPage', () => {
   it('shows an Arabic error when the server refuses', async () => {
     const api = fakeApi(deal({ status: 'held', is_seller: true }));
     api.markShipped = vi.fn(async () => { throw new Error('not_allowed'); });
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={api} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={api} />);
     fireEvent.click(await screen.findByRole('button', { name: 'تم الشحن' }));
     expect((await screen.findByRole('alert')).textContent).toContain('حالة الصفقة تغيرت');
   });
 
   it('shows not found for an unknown link', async () => {
-    render(<DealPage db={db} id={ID} paid={false} loggedIn api={fakeApi(null)} />);
+    render(<DealPage id={ID} paid={false} loggedIn api={fakeApi(null)} />);
     expect(await screen.findByText('ما لقينا هالصفقة')).toBeTruthy();
   });
 });
@@ -142,7 +143,7 @@ describe('DealPage', () => {
 describe('Home', () => {
   it('creates a deal and shows the share link', async () => {
     const api = fakeApi(null);
-    render(<Home db={db} userId="seller-1" api={api} />);
+    render(<Home userId="seller-1" api={api} />);
     const form = screen.getByRole('form', { name: 'صفقة جديدة' });
     const q = within(form);
     fireEvent.change(q.getByLabelText('اسم متجرك'), { target: { value: 'عطور الورد' } });
@@ -157,7 +158,7 @@ describe('Home', () => {
 
   it('rejects a price under 1 KWD before calling the database', async () => {
     const api = fakeApi(null);
-    render(<Home db={db} userId="seller-1" api={api} />);
+    render(<Home userId="seller-1" api={api} />);
     const q = within(screen.getByRole('form', { name: 'صفقة جديدة' }));
     fireEvent.change(q.getByLabelText('اسم متجرك'), { target: { value: 'متجر' } });
     fireEvent.change(q.getByLabelText('المنتج'), { target: { value: 'منتج' } });

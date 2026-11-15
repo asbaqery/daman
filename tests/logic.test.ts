@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
-  allowedOrigin, decideAction, decideCheckout, decideHold, formatKwd, parseKwd, statusAfterCancel, toChargeMinor, type HoldFacts,
-} from '../supabase/functions/_shared/logic';
-import { actionsFor, steps, validateDeal } from '../src/lib/deals';
-import { parseRoute } from '../src/lib/router';
-import { friendlyError } from '../src/lib/api';
+  decideAction, decideCheckout, decideHold, formatKwd, parseKwd, statusAfterCancel, toChargeMinor, type HoldFacts,
+} from '../lib/logic';
+import { actionsFor, steps, validateDeal } from '../lib/deals';
+import { friendlyError } from '../lib/api';
+import { isSameOriginRequest, returnOrigin } from '../lib/csrf';
+import { validateLogin, validateSignup } from '../lib/validation';
 
 const SELLER = 'seller-1';
 const BUYER = 'buyer-1';
 const OTHER = 'other-1';
 const NOW = new Date('2026-11-14T12:00:00Z');
-const DEAL_ID = '11111111-2222-4333-8444-555555555555';
+const DEAL_ID = '65a1b2c3d4e5f60718293a4b';
 
 describe('money', () => {
   it.each([['25', 25000], ['25.5', 25500], ['٢٥٫٥٠٠', 25500], ['1', 1000], ['1000', 1000000], ['3,75', 3750]])('parses %s', (raw, fils) => expect(parseKwd(raw)).toBe(fils));
@@ -83,16 +84,6 @@ describe('decideHold (webhook)', () => {
   });
 });
 
-describe('allowedOrigin', () => {
-  it('accepts the site and localhost only', () => {
-    expect(allowedOrigin('https://daman.vercel.app', 'https://daman.vercel.app/')).toBe('https://daman.vercel.app');
-    expect(allowedOrigin('http://localhost:5300', 'https://daman.vercel.app')).toBe('http://localhost:5300');
-    expect(allowedOrigin('https://evil.example', 'https://daman.vercel.app')).toBeNull();
-    expect(allowedOrigin(null, 'https://daman.vercel.app')).toBeNull();
-    expect(allowedOrigin('http://daman.vercel.app.evil.example', 'https://daman.vercel.app')).toBeNull();
-  });
-});
-
 describe('UI rules', () => {
   const view = (status: string, role: 'seller' | 'buyer' | 'visitor', reserved = false) => ({
     status: status as never, is_seller: role === 'seller', is_buyer: role === 'buyer', reserved_by_other: reserved,
@@ -122,18 +113,41 @@ describe('UI rules', () => {
     expect(validateDeal({ shop_name: 'a', title: 'b', description: '', price: '0.5' }).ok).toBe(false);
     expect(validateDeal({ shop_name: 'a', title: 'b', description: 'x'.repeat(501), price: '5' }).ok).toBe(false);
   });
-  it('parses routes', () => {
-    expect(parseRoute('/', '')).toEqual({ name: 'home' });
-    expect(parseRoute(`/d/${DEAL_ID}`, '?paid=1')).toEqual({ name: 'deal', id: DEAL_ID, paid: true });
-    expect(parseRoute(`/d/${DEAL_ID.toUpperCase()}/`, '')).toEqual({ name: 'deal', id: DEAL_ID, paid: false });
-    expect(parseRoute('/d/not-a-uuid', '')).toEqual({ name: 'not_found' });
-    expect(parseRoute('/x', '')).toEqual({ name: 'not_found' });
-  });
   it('maps function error codes to Arabic', () => {
     expect(friendlyError(new Error('own_deal'))).toContain('صفقتك');
-    expect(friendlyError(new Error('reserved'))).toContain('مشتري ثاني');
+    expect(friendlyError(new Error('reserved'))).toContain('قاعد يدفع');
     expect(friendlyError(new Error('stripe_conflict'))).toContain('تغيرت');
     expect(friendlyError(new TypeError('Load failed'))).toContain('الإنترنت');
-    expect(friendlyError(Object.assign(new Error('Failed to send a request to the Edge Function'), { name: 'FunctionsFetchError' }))).toContain('الإنترنت');
+  });
+});
+
+describe('csrf and return origin', () => {
+  const h = (o: Record<string, string>) => new Headers(o);
+  it('accepts same-origin posts and rejects cross-site ones', () => {
+    expect(isSameOriginRequest(h({ origin: 'https://daman.replit.app', host: 'daman.replit.app' }), {})).toBe(true);
+    expect(isSameOriginRequest(h({ origin: 'https://evil.example', host: 'daman.replit.app' }), {})).toBe(false);
+    expect(isSameOriginRequest(h({ origin: 'https://evil.example', host: 'evil.example' }), { APP_ORIGIN: 'https://daman.replit.app' })).toBe(false);
+    expect(isSameOriginRequest(h({ host: 'daman.replit.app' }), {})).toBe(false);
+    expect(isSameOriginRequest(h({ host: 'daman.replit.app', 'sec-fetch-site': 'same-origin' }), {})).toBe(true);
+  });
+  it('builds Stripe return links only from APP_ORIGIN in production', () => {
+    expect(returnOrigin('https://evil.example', { APP_ORIGIN: 'https://daman.replit.app/', NODE_ENV: 'production' })).toBe('https://daman.replit.app');
+    expect(returnOrigin('https://evil.example', { NODE_ENV: 'production' })).toBeNull();
+    expect(returnOrigin('http://localhost:5300', { NODE_ENV: 'production' })).toBe('http://localhost:5300');
+    expect(returnOrigin('http://shop.test', { NODE_ENV: 'development' })).toBe('http://shop.test');
+  });
+});
+
+describe('account validation', () => {
+  it('normalizes and checks sign-up', () => {
+    expect(validateSignup({ name: ' علي  باقر ', email: ' Ali@Example.COM ', password: 'longpass1' })).toEqual({ ok: true, data: { name: 'علي باقر', email: 'ali@example.com', password: 'longpass1' } });
+    const bad = validateSignup({ name: 'a', email: 'x', password: 'short' });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(Object.keys(bad.errors).sort()).toEqual(['email', 'name', 'password']);
+  });
+  it('checks login', () => {
+    expect(validateLogin({ email: 'a@b.co', password: 'x' }).ok).toBe(true);
+    expect(validateLogin({ email: 'a@b.co', password: '' }).ok).toBe(false);
+    expect(validateLogin({ email: 'a@b.co', password: 'é'.repeat(40) }).ok).toBe(false);
   });
 });

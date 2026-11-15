@@ -1,0 +1,15 @@
+# ضمان — Next.js (App Router) على Replit
+modules = ["nodejs-20"]
+entrypoint = "app/page.tsx"
+
+# زر Run داخل مساحة العمل: تثبيت الحزم ثم خادم التطوير على 0.0.0.0:3000
+run = "npm install && npm run dev"
+
+[[ports]]
+localPort = 3000
+externalPort = 80
+
+[deployment]
+# النشر: بناء نسخة الإنتاج ثم تشغيلها. اختر نوع النشر Autoscale من لوحة Publishing.
+build = ["sh", "-c", "npm ci && npm run build"]
+run = ["npm", "run", "start"]

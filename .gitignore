@@ -1,10 +1,14 @@
 node_modules
+.next
+out
 dist
+*.log
+*.tsbuildinfo
+next-env.d.ts
 .env
 .env.*
 !.env.example
-*.log
-*.tsbuildinfo
 .vercel
 .DS_Store
 .claude
+.old
