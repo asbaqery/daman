@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import mongoose, { Schema, Types, type Model } from 'mongoose';
 import { MAX_PRICE_FILS, MIN_PRICE_FILS } from '../lib/logic';
 
@@ -5,6 +6,8 @@ export const DEAL_STATUSES = ['awaiting_payment', 'held', 'shipped', 'released',
 
 export interface DealDoc {
   _id: Types.ObjectId;
+  /** رمز عشوائي في رابط الصفقة. معرّف MongoDB ممكن ينخمّن فما نستخدمه في الروابط */
+  public_token: string;
   seller_id: Types.ObjectId;
   buyer_id: Types.ObjectId | null;
   shop_name: string;
@@ -26,6 +29,7 @@ export interface DealDoc {
 
 const dealSchema = new Schema<DealDoc>(
   {
+    public_token: { type: String, required: true, unique: true, default: () => crypto.randomBytes(16).toString('base64url') },
     seller_id: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     buyer_id: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     shop_name: { type: String, required: true, trim: true, minlength: 1, maxlength: 60 },

@@ -15,8 +15,10 @@ export const toChargeMinor = (fils: number) => Math.round((fils * 325) / 1000);
 export const RESERVE_MINUTES = 35;
 export const CHECKOUT_MINUTES = 31;
 
-/** معرّفات MongoDB */
+/** معرّفات MongoDB (داخلية، مثل metadata في Stripe) */
 export const OBJECT_ID_RE = /^[a-f0-9]{24}$/;
+/** رمز رابط الصفقة: 16 بايت عشوائية base64url */
+export const DEAL_TOKEN_RE = /^[A-Za-z0-9_-]{22}$/;
 
 /** يحول نصًا مثل "12.5" أو "١٢٫٥" إلى فلس. يرجع null لأي قيمة غير صالحة أو خارج الحدود. */
 export function parseKwd(raw: string): number | null {

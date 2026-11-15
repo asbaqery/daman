@@ -138,10 +138,10 @@ export function DealPage({ id, paid, loggedIn, api = dealsApi }: { id: string; p
     <div className="space-y-4">
       <section className="card">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm text-slate-500">{deal.shop_name}</p>
-            <h1 className="text-2xl font-bold text-slate-900">{deal.title}</h1>
-            {deal.description && <p className="mt-1 text-slate-600">{deal.description}</p>}
+          <div className="min-w-0 flex-1">
+            <p className="break-words text-sm text-slate-500">{deal.shop_name}</p>
+            <h1 className="break-words text-2xl font-bold text-slate-900">{deal.title}</h1>
+            {deal.description && <p className="mt-1 break-words text-slate-600">{deal.description}</p>}
           </div>
           <span className={`rounded-full px-3 py-1 text-sm font-semibold ${STATUS_TONE[deal.status]}`} data-testid="status">{STATUS_LABEL[deal.status]}</span>
         </div>

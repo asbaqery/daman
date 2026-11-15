@@ -137,9 +137,9 @@ function DealList({ title, empty, items }: { title: string; empty: string; items
           {items.map((d) => (
             <li key={d.id}>
               <button type="button" onClick={() => navigate(`/d/${d.id}`)} className="card flex w-full items-center justify-between gap-3 text-start hover:border-indigo-300">
-                <span>
-                  <span className="block font-semibold text-slate-900">{d.title}</span>
-                  <span className="block text-sm text-slate-500">{d.shop_name} · {formatKwd(d.price_fils)}</span>
+                <span className="min-w-0">
+                  <span className="block break-words font-semibold text-slate-900">{d.title}</span>
+                  <span className="block break-words text-sm text-slate-500">{d.shop_name} · {formatKwd(d.price_fils)}</span>
                 </span>
                 <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${STATUS_TONE[d.status]}`}>{STATUS_LABEL[d.status]}</span>
               </button>

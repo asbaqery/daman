@@ -5,7 +5,7 @@ import { connectDB } from './db';
 import { Deal, type DealDoc } from '../models/Deal';
 import { getStripe } from './stripe';
 import {
-  CHARGE_CURRENCY, CHECKOUT_MINUTES, OBJECT_ID_RE, RESERVE_MINUTES, decideAction, decideCheckout, decideHold, statusAfterCancel,
+  CHARGE_CURRENCY, CHECKOUT_MINUTES, DEAL_TOKEN_RE, OBJECT_ID_RE, RESERVE_MINUTES, decideAction, decideCheckout, decideHold, statusAfterCancel,
   toChargeMinor, type DealRow, type DealStatus,
 } from './logic';
 import type { DealInput } from './deals';
@@ -40,7 +40,7 @@ export function publicView(d: DealDoc, userId: string | null, now = new Date()) 
   const sellerId = d.seller_id.toString();
   const buyerId = str(d.buyer_id);
   return {
-    id: d._id.toString(),
+    id: d.public_token,
     shop_name: d.shop_name,
     title: d.title,
     description: d.description ?? null,
@@ -58,16 +58,17 @@ export function publicView(d: DealDoc, userId: string | null, now = new Date()) 
   };
 }
 
-export async function getDeal(id: string): Promise<DealDoc | null> {
-  if (!OBJECT_ID_RE.test(id)) return null;
+/** الصفقة من رمز الرابط */
+export async function getDeal(token: string): Promise<DealDoc | null> {
+  if (!DEAL_TOKEN_RE.test(token)) return null;
   await connectDB();
-  return Deal.findById(id).lean<DealDoc>();
+  return Deal.findOne({ public_token: token }).lean<DealDoc>();
 }
 
 export async function createDeal(sellerId: string, input: DealInput) {
   await connectDB();
   const d = await Deal.create({ seller_id: oid(sellerId), ...input });
-  return { id: d._id.toString() };
+  return { id: d.public_token };
 }
 
 /** صفقات المستخدم كبائع أو مشتري فقط */
@@ -78,7 +79,7 @@ export async function listMine(userId: string) {
     .limit(100)
     .lean<DealDoc[]>();
   return docs.map((d) => ({
-    id: d._id.toString(),
+    id: d.public_token,
     shop_name: d.shop_name,
     title: d.title,
     price_fils: d.price_fils,
@@ -90,9 +91,10 @@ export async function listMine(userId: string) {
 }
 
 /** يحجز الصفقة لمشتري واحد ويفتح صفحة دفع Stripe بحجز المبلغ بدون سحبه */
-export async function startCheckout(dealId: string, user: { id: string; email: string }, origin: string): Promise<string> {
-  const deal = await getDeal(dealId);
+export async function startCheckout(token: string, user: { id: string; email: string }, origin: string): Promise<string> {
+  const deal = await getDeal(token);
   if (!deal) throw new DealError('not_found', 404);
+  const dealId = deal._id.toString();
   const now = new Date();
   const decision = decideCheckout(toRow(deal), user.id, now);
   if (!decision.ok) throw new DealError(decision.code, decision.status);
@@ -132,8 +134,8 @@ export async function startCheckout(dealId: string, user: { id: string; email: s
         metadata: { deal_id: dealId, buyer_id: user.id },
       },
       line_items: [{ quantity: 1, price_data: { currency: CHARGE_CURRENCY, unit_amount: chargeAmount, product_data: { name: deal.title } } }],
-      success_url: `${origin}/d/${dealId}?paid=1`,
-      cancel_url: `${origin}/d/${dealId}`,
+      success_url: `${origin}/d/${token}?paid=1`,
+      cancel_url: `${origin}/d/${token}`,
     });
     const linked = await Deal.findOneAndUpdate(
       { _id: deal._id, buyer_id: oid(user.id), status: 'awaiting_payment' },
@@ -154,20 +156,21 @@ export async function startCheckout(dealId: string, user: { id: string; email: s
 }
 
 /** البائع يعلّم «تم الشحن» بس لما يكون المبلغ محجوز */
-export async function markShipped(dealId: string, userId: string) {
-  if (!OBJECT_ID_RE.test(dealId)) throw new DealError('not_found', 404);
+export async function markShipped(token: string, userId: string) {
+  if (!DEAL_TOKEN_RE.test(token)) throw new DealError('not_found', 404);
   await connectDB();
   const d = await Deal.findOneAndUpdate(
-    { _id: oid(dealId), seller_id: oid(userId), status: 'held' },
+    { public_token: token, seller_id: oid(userId), status: 'held' },
     { $set: { status: 'shipped', shipped_at: new Date() } },
   );
   if (!d) throw new DealError('not_allowed', 409);
 }
 
 /** المشتري يأكد الاستلام: ينسحب المبلغ المحجوز للبائع */
-export async function release(dealId: string, userId: string) {
-  const deal = await getDeal(dealId);
+export async function release(token: string, userId: string) {
+  const deal = await getDeal(token);
   if (!deal) throw new DealError('not_found', 404);
+  const dealId = deal._id.toString();
   const decision = decideAction(toRow(deal), userId, 'release');
   if (!decision.ok) throw new DealError(decision.code, decision.status);
   try {
@@ -184,13 +187,28 @@ export async function release(dealId: string, userId: string) {
  * - البائع وما في دفع: يلغي الصفقة (إلا إذا في مشتري قاعد يدفع الحين).
  * - المشتري قبل الشحن، أو البائع قبل التحويل: نفك الحجز فيرجع المبلغ كامل.
  */
-export async function cancel(dealId: string, userId: string) {
-  const deal = await getDeal(dealId);
+export async function cancel(token: string, userId: string) {
+  const deal = await getDeal(token);
   if (!deal) throw new DealError('not_found', 404);
+  const dealId = deal._id.toString();
   const isSeller = deal.seller_id.toString() === userId;
 
   if (deal.status === 'awaiting_payment') {
     if (!isSeller) throw new DealError('forbidden', 403);
+    // أحد فتح صفحة الدفع وتركها: نسكر جلسته عشان البائع يقدر يلغي، إلا إذا الدفع قاعد يكتمل
+    if (deal.stripe_session_id && deal.reserved_until && deal.reserved_until > new Date()) {
+      const stripe = getStripe();
+      const open = await stripe.checkout.sessions.retrieve(deal.stripe_session_id).catch(() => null);
+      if (!open || open.status === 'complete') throw new DealError('reserved', 409);
+      if (open.status === 'open') {
+        try {
+          await stripe.checkout.sessions.expire(open.id);
+        } catch {
+          throw new DealError('reserved', 409);
+        }
+      }
+      await Deal.updateOne({ _id: deal._id, status: 'awaiting_payment', stripe_session_id: open.id }, { $set: { buyer_id: null, reserved_until: null, stripe_session_id: null } });
+    }
     const now = new Date();
     const d = await Deal.findOneAndUpdate(
       { _id: deal._id, seller_id: oid(userId), status: 'awaiting_payment', $or: [{ reserved_until: null }, { reserved_until: { $lt: now } }] },
@@ -219,7 +237,16 @@ export async function cancel(dealId: string, userId: string) {
     }
   } catch (err) {
     console.error('[cancel] stripe', (err as Error).name);
-    if (buyerCancel) await Deal.updateOne({ _id: deal._id, status: 'cancelled' }, { $set: { status: 'held', cancelled_at: null } });
+    if (buyerCancel) {
+      // نرجع الصفقة حسب حالة الدفع الحقيقية في Stripe، مو على العمياني
+      const pi = await getStripe().paymentIntents.retrieve(deal.payment_intent_id!).catch(() => null);
+      if (pi?.status === 'canceled') return; // الإلغاء صار فعلًا
+      if (pi?.status === 'succeeded') {
+        await Deal.updateOne({ _id: deal._id, status: 'cancelled' }, { $set: { status: 'released', released_at: new Date(), cancelled_at: null } });
+      } else {
+        await Deal.updateOne({ _id: deal._id, status: 'cancelled' }, { $set: { status: 'held', cancelled_at: null } });
+      }
+    }
     throw new DealError('stripe_conflict', 409);
   }
 }

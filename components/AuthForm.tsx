@@ -33,6 +33,7 @@ export function AuthForm({ compact = false }: { compact?: boolean }) {
       }
       // الخادم حط كوكي الجلسة: نحدّث الصفحة عشان تعرف إنك مسجل
       router.refresh();
+      setBusy(false);
     } catch {
       setError('ما قدرنا نوصل للسيرفر. شيك على الإنترنت.');
       setBusy(false);
